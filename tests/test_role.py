@@ -168,3 +168,33 @@ async def test_execute_llm_returns_blocked_stays_blocked():
 
     assert result['decision'] == 'BLOCKED'
     assert result['block_reason'] == 'PASS is not allowed here'
+
+
+@pytest.mark.asyncio
+async def test_execute_blocked_empty_safe_tools_from_manifest_compliance():
+    # Regression: ensure safe_tools filtering respects trusted agent.yaml enums, not tool result dict keys
+    ctx = MagicMock()
+    ctx.prompt = AsyncMock()
+    ctx.tools.call = AsyncMock()
+    ctx.llm.chat = AsyncMock()
+
+    ctx.prompt.return_value = MagicMock()
+    ctx.prompt.return_value.compile.return_value = "..."
+    # Simulate tool record with lowercase/whitespace-padded enums — must normalize per contract
+    ctx.tools.call.side_effect = [
+        [{'jobId': 'DF-0012', 'status': 'DONE'}],
+        [
+            {'name': 'log-viewer', 'access': ' read ', 'risk': 'low'},
+            {'name': 'config-dump', 'access': 'WRITE', 'risk': 'MID'}
+        ]
+    ]
+    ctx.llm.chat.return_value = '{"decision": "PASS"}'
+
+    data = {'text': 'DF-0012'}
+
+    result = await execute(data, ctx)
+
+    assert result['decision'] == 'PASS'
+    assert 'answer' in result
+    assert '已完成' in result['answer']
+    assert 'log-viewer' in result['answer']

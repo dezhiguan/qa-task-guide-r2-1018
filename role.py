@@ -32,10 +32,11 @@ async def execute(data: dict, ctx) -> dict:
         return _blocked(f'工具调用异常：{str(e)}')
 
     # Filter only READ + LOW tools using manifest-specified enum semantics (case-insensitive, normalized)
+    # Per trusted agent.yaml: tool.risk/tool.access are direct string attrs; no .get() or fallback needed
     safe_tools = []
     for t in catalog_res:
-        access = str(getattr(t, 'access', '') or '').strip().upper()
-        risk = str(getattr(t, 'risk', '') or '').strip().upper()
+        access = getattr(t, 'access', '').strip().upper()
+        risk = getattr(t, 'risk', '').strip().upper()
         if access == 'READ' and risk == 'LOW':
             safe_tools.append(t)
 
@@ -62,12 +63,7 @@ async def execute(data: dict, ctx) -> dict:
 
     # Block if no safe tools — required by H1: "only recommend READ/LOW", and empty list violates safety guarantee
     if not safe_tools:
-        return {
-            'decision': 'BLOCKED',
-            'block_reason': '工具目录中无符合 READ/LOW 要求的可用工具',
-            'evidence_sources': evidence_sources,
-            'steps': steps
-        }
+        return _blocked('工具目录中无符合 READ/LOW 要求的可用工具')
 
     # Get prompt & compile system message
     prompt = await ctx.prompt('role')
