@@ -6,35 +6,36 @@ from typing import Dict, Any, List, Optional
 async def execute(data: dict, ctx) -> dict:
     text = data.get('text', '').strip()
     if not text:
-        return _blocked('输入为空')
+        return _blocked('输入为空', evidence_sources=[], steps=[])
 
-    # Extract exactly one DF-xxx task ID
+    # Extract exactly one DF-xxx task ID: support Chinese adjacent (e.g., "任务DF-0012。" or "DF-0012状态？")
     df_matches = re.findall(r'DF-\d+', text)
     if len(df_matches) != 1:
-        return _blocked(f'必须且仅能指定一个DF编号，当前匹配到{len(df_matches)}个：{df_matches}')
+        return _blocked(f'必须且仅能指定一个DF编号，当前匹配到{len(df_matches)}个：{df_matches}', evidence_sources=[], steps=[])
     job_id = df_matches[0]
 
     # Call tools
     try:
         job_res = await ctx.tools.call('devflow.job.read', jobId=job_id)
         if not isinstance(job_res, list):
-            return _blocked('devflow.job.read 返回非列表类型')
+            return _blocked('devflow.job.read 返回非列表类型', evidence_sources=[], steps=[])
         if not job_res:
-            return _blocked(f'未查到任务 {job_id} 的任何记录')
+            return _blocked(f'未查到任务 {job_id} 的任何记录', evidence_sources=[], steps=[])
+        # Validate job record structure: must be dict with 'status'
+        first_job = job_res[0]
+        if not isinstance(first_job, dict) or 'status' not in first_job:
+            return _blocked(f'任务 {job_id} 记录格式无效：缺少 status 字段', evidence_sources=[], steps=[])
 
         catalog_res = await ctx.tools.call('devflow.catalog.search', query='')
         if not isinstance(catalog_res, list):
-            return _blocked('devflow.catalog.search 返回非列表类型')
+            return _blocked('devflow.catalog.search 返回非列表类型', evidence_sources=[], steps=[])
         if not catalog_res:
-            return _blocked('工具目录为空，无可用只读工具')
+            return _blocked('工具目录为空，无可用只读工具', evidence_sources=[], steps=[])
 
     except Exception as e:
-        return _blocked(f'工具调用异常：{str(e)}')
+        return _blocked(f'工具调用异常：{str(e)}', evidence_sources=[], steps=[])
 
-    # Filter only READ + LOW tools using manifest-specified enum semantics (case-insensitive, normalized)
-    # Per trusted agent.yaml: tool.risk/tool.access are direct string attrs; no .get() or fallback needed
-    # BUT: catalog_res items are plain dicts per contract — not objects with .access/.risk attrs
-    # So use dict.get(), normalize case-insensitively, and strip whitespace
+    # Filter only READ + LOW tools using dict.get() and case-insensitive normalize (per contract: "normalize enum case when comparing")
     safe_tools = []
     for t in catalog_res:
         if isinstance(t, dict):
@@ -42,27 +43,12 @@ async def execute(data: dict, ctx) -> dict:
             risk = str(t.get('risk', '')).strip().upper()
             if access == 'READ' and risk == 'LOW':
                 safe_tools.append(t)
-        else:
-            # Fallback: try getattr only if not dict (e.g., mock object), but per contract it's dict
-            access = getattr(t, 'access', '').strip().upper()
-            risk = getattr(t, 'risk', '').strip().upper()
-            if access == 'READ' and risk == 'LOW':
-                safe_tools.append(t)
 
-
-
-    # Prepare user message with real evidence
-    evidence = {
-        'job_record': job_res[0],
-        'safe_tools': safe_tools
-    }
-    # Build evidence_sources *before* blocking on safe_tools — required by H1 contract: must always return non-empty evidence_sources/steps on PASS/BLOCKED
+    # Build evidence_sources and steps — required on *all* paths (PASS/BLOCKED)
     evidence_sources = [
         {'tool': 'devflow.job.read', 'query': {'jobId': job_id}, 'count': len(job_res)},
         {'tool': 'devflow.catalog.search', 'query': {'query': ''}, 'count': len(catalog_res)}
     ]
-
-    # Build steps *before* blocking on safe_tools — same reason
     steps = [
         f'从输入提取唯一任务ID：{job_id}',
         f'调用 devflow.job.read(jobId="{job_id}") → {len(job_res)} 条记录',
@@ -70,14 +56,15 @@ async def execute(data: dict, ctx) -> dict:
         f'筛选出 {len(safe_tools)} 个 READ/LOW 工具'
     ]
 
-    # Block if no safe tools — required by H1: "only recommend READ/LOW", and empty list violates safety guarantee
+    # Block if no safe tools
     if not safe_tools:
-        return {
-            'decision': 'BLOCKED',
-            'block_reason': '工具目录中无符合 READ/LOW 要求的可用工具',
-            'evidence_sources': evidence_sources,
-            'steps': steps
-        }
+        return _blocked('工具目录中无符合 READ/LOW 要求的可用工具', evidence_sources, steps)
+
+    # Prepare user message with real evidence
+    evidence = {
+        'job_record': job_res[0],
+        'safe_tools': safe_tools
+    }
 
     # Get prompt & compile system message
     prompt = await ctx.prompt('role')
@@ -90,22 +77,38 @@ async def execute(data: dict, ctx) -> dict:
             {'role': 'system', 'content': system_msg},
             {'role': 'user', 'content': user_msg}
         ], prompt=prompt)
-        decision_obj = json.loads(llm_out.strip())
+        # Parse as JSON; allow optional answer/block_reason per H1
+        try:
+            decision_obj = json.loads(llm_out.strip())
+        except json.JSONDecodeError as e:
+            return _blocked(f'LLM返回非法JSON：{str(e)}', evidence_sources, steps)
+        
+        # decision is mandatory
         decision = decision_obj.get('decision')
         if decision not in ('PASS', 'BLOCKED'):
-            return _blocked(f'LLM返回无效decision：{decision}')
+            return _blocked(f'LLM返回无效decision：{decision}', evidence_sources, steps)
+        
+        # If PASS, answer is optional but must be string if present
+        if decision == 'PASS':
+            answer = decision_obj.get('answer')
+            if answer is not None and not isinstance(answer, str):
+                return _blocked(f'LLM返回的answer字段必须为字符串，实际类型：{type(answer).__name__}', evidence_sources, steps)
+                
     except Exception as e:
-        return _blocked(f'LLM解析失败：{str(e)}')
+        return _blocked(f'LLM调用或解析异常：{str(e)}', evidence_sources, steps)
 
     if decision == 'BLOCKED':
+        block_reason = decision_obj.get('block_reason')
+        if block_reason is not None and not isinstance(block_reason, str):
+            block_reason = '模型返回的block_reason字段类型非法'
         return {
             'decision': 'BLOCKED',
-            'block_reason': decision_obj.get('block_reason', '模型判定阻塞'),
+            'block_reason': block_reason or '模型判定阻塞',
             'evidence_sources': evidence_sources,
             'steps': steps
         }
 
-    # Assemble answer from real evidence
+    # Assemble answer from real evidence (fallback if model didn't provide valid answer)
     job = job_res[0]
     status = job.get('status', 'UNKNOWN').upper()
     desc_map = {
@@ -117,7 +120,10 @@ async def execute(data: dict, ctx) -> dict:
     tool_names = [t.get('name', '未知工具') for t in safe_tools]
     tool_list = '、'.join(tool_names) if tool_names else '暂无符合安全要求的只读工具'
 
-    answer = f"任务 {job_id} 当前状态：{status_zh}。可用只读工具：{tool_list}。"
+    # Use model's answer if valid, otherwise construct
+    answer = decision_obj.get('answer')
+    if not isinstance(answer, str):
+        answer = f"任务 {job_id} 当前状态：{status_zh}。可用只读工具：{tool_list}。"
 
     return {
         'decision': 'PASS',
@@ -127,10 +133,10 @@ async def execute(data: dict, ctx) -> dict:
     }
 
 
-def _blocked(reason: str) -> dict:
+def _blocked(reason: str, evidence_sources: List[Dict], steps: List[str]) -> dict:
     return {
         'decision': 'BLOCKED',
         'block_reason': reason,
-        'evidence_sources': [],
-        'steps': []
+        'evidence_sources': evidence_sources,
+        'steps': steps
     }
