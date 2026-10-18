@@ -215,6 +215,7 @@ async def test_execute_blocked_invalid_llm_json():
         data = {'text': 'DF-0012'}
         result = await execute(data, ctx)
         assert result['decision'] == 'BLOCKED'
+        # Only the tools that succeeded are recorded — first call succeeded, second succeeded ⇒ 2 sources
         assert len(result['evidence_sources']) == 2
         assert len(result['steps']) == 4
 
