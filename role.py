@@ -31,11 +31,13 @@ async def execute(data: dict, ctx) -> dict:
     except Exception as e:
         return _blocked(f'工具调用异常：{str(e)}')
 
-    # Filter only READ + LOW tools
-    safe_tools = [
-        t for t in catalog_res
-        if getattr(t, 'access', '').upper() == 'READ' and getattr(t, 'risk', '').upper() == 'LOW'
-    ]
+    # Filter only READ + LOW tools using manifest-specified enum semantics (case-insensitive, normalized)
+    safe_tools = []
+    for t in catalog_res:
+        access = getattr(t, 'access', '').strip().upper()
+        risk = getattr(t, 'risk', '').strip().upper()
+        if access == 'READ' and risk == 'LOW':
+            safe_tools.append(t)
 
     # Build evidence_sources
     evidence_sources = [
@@ -56,6 +58,9 @@ async def execute(data: dict, ctx) -> dict:
         'job_record': job_res[0],
         'safe_tools': safe_tools
     }
+    # Block if no safe tools — required by H1: "only recommend READ/LOW", and empty list violates safety guarantee
+    if not safe_tools:
+        return _blocked('工具目录中无符合 READ/LOW 要求的可用工具')
 
     # Get prompt & compile system message
     prompt = await ctx.prompt('role')

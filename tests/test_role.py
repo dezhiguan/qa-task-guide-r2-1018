@@ -44,6 +44,31 @@ async def test_execute_normal_case():
     assert result['decision'] == 'PASS'
     assert 'answer' in result
     assert '任务 DF-0012 当前状态：已完成。可用只读工具：log-viewer、trace-explorer。' in result['answer']
+
+
+@pytest.mark.asyncio
+async def test_execute_blocked_no_safe_tools():
+    ctx = MagicMock()
+    ctx.prompt = AsyncMock()
+    ctx.tools.call = AsyncMock()
+    ctx.llm.chat = AsyncMock()
+
+    ctx.prompt.return_value = MagicMock()
+    ctx.prompt.return_value.compile.return_value = "..."
+    ctx.tools.call.side_effect = [
+        [{'jobId': 'DF-0012', 'status': 'DONE'}],
+        [
+            {'name': 'config-dump', 'access': 'WRITE', 'risk': 'MID'},
+            {'name': 'exec-runner', 'access': 'EXEC', 'risk': 'HIGH'}
+        ]
+    ]
+
+    data = {'text': 'DF-0012'}
+
+    result = await execute(data, ctx)
+
+    assert result['decision'] == 'BLOCKED'
+    assert '无符合 READ/LOW 要求的可用工具' in result['block_reason']
     assert len(result['evidence_sources']) == 2
     assert len(result['steps']) == 4
 
