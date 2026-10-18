@@ -33,12 +33,21 @@ async def execute(data: dict, ctx) -> dict:
 
     # Filter only READ + LOW tools using manifest-specified enum semantics (case-insensitive, normalized)
     # Per trusted agent.yaml: tool.risk/tool.access are direct string attrs; no .get() or fallback needed
+    # BUT: catalog_res items are plain dicts per contract — not objects with .access/.risk attrs
+    # So use dict.get(), normalize case-insensitively, and strip whitespace
     safe_tools = []
     for t in catalog_res:
-        access = getattr(t, 'access', '').strip().upper()
-        risk = getattr(t, 'risk', '').strip().upper()
-        if access == 'READ' and risk == 'LOW':
-            safe_tools.append(t)
+        if isinstance(t, dict):
+            access = str(t.get('access', '')).strip().upper()
+            risk = str(t.get('risk', '')).strip().upper()
+            if access == 'READ' and risk == 'LOW':
+                safe_tools.append(t)
+        else:
+            # Fallback: try getattr only if not dict (e.g., mock object), but per contract it's dict
+            access = getattr(t, 'access', '').strip().upper()
+            risk = getattr(t, 'risk', '').strip().upper()
+            if access == 'READ' and risk == 'LOW':
+                safe_tools.append(t)
 
 
 
@@ -63,7 +72,12 @@ async def execute(data: dict, ctx) -> dict:
 
     # Block if no safe tools — required by H1: "only recommend READ/LOW", and empty list violates safety guarantee
     if not safe_tools:
-        return _blocked('工具目录中无符合 READ/LOW 要求的可用工具')
+        return {
+            'decision': 'BLOCKED',
+            'block_reason': '工具目录中无符合 READ/LOW 要求的可用工具',
+            'evidence_sources': evidence_sources,
+            'steps': steps
+        }
 
     # Get prompt & compile system message
     prompt = await ctx.prompt('role')
