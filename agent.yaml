@@ -1,0 +1,44 @@
+kind: Agent
+spec:
+  auth:
+    audience: qa-task-guide-r2-1018
+  eval:
+    dataset: qa-task-guide-r2-1018/seed
+  kind: workflow
+  audit:
+    captureFields:
+    - request_id
+  tools:
+  - name: devflow.job.read
+    risk: low
+    access: read
+    approval: none
+  - name: devflow.catalog.search
+    risk: low
+    access: read
+    approval: none
+  models:
+    budget:
+      dailyCny: 20.0
+    default: qwen-plus
+  prompts:
+    items:
+    - name: role
+      type: text
+    source: langfuse
+  runtime:
+    type: code
+    endpoint: http://qa-task-guide-r2-1018.agents.svc.cluster.local:8000
+    language: python
+    liveness: k8s
+  delegates: []
+  knowledge: []
+  guardrails:
+    pii: mask
+    grounding: 'off'
+    inputInjection: enforce
+metadata:
+  name: qa-task-guide-r2-1018
+  owner: 平台组 / 官德志
+  displayName: 任务进度与工具导航·底座修复回归
+apiVersion: keel/v1
