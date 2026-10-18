@@ -9,12 +9,19 @@ async def execute(data: dict, ctx) -> dict:
         return _blocked('输入为空', evidence_sources=[], steps=[])
 
     # Extract exactly one DF-xxx task ID: support Chinese adjacent (e.g., "任务DF-0012。" or "DF-0012状态？")
+    # Use raw pattern r'DF-\d+' — \w includes Chinese in Python str.isalnum, but DF- is ASCII prefix; 
+    # we only need to match the standard DF-<digits> shape, and H1 says "Chinese紧邻编号" means chars can flank it, not replace it.
     df_matches = re.findall(r'DF-\d+', text)
     if len(df_matches) != 1:
         return _blocked(f'必须且仅能指定一个DF编号，当前匹配到{len(df_matches)}个：{df_matches}', evidence_sources=[], steps=[])
     job_id = df_matches[0]
 
     # Call tools
+    job_res = None
+    catalog_res = None
+    evidence_sources = []
+    steps = []
+
     try:
         job_res = await ctx.tools.call('devflow.job.read', jobId=job_id)
         if not isinstance(job_res, list):
@@ -25,17 +32,28 @@ async def execute(data: dict, ctx) -> dict:
         first_job = job_res[0]
         if not isinstance(first_job, dict) or 'status' not in first_job:
             return _blocked(f'任务 {job_id} 记录格式无效：缺少 status 字段', evidence_sources=[], steps=[])
-
-        catalog_res = await ctx.tools.call('devflow.catalog.search', query='')
-        if not isinstance(catalog_res, list):
-            return _blocked('devflow.catalog.search 返回非列表类型', evidence_sources=[], steps=[])
-        if not catalog_res:
-            return _blocked('工具目录为空，无可用只读工具', evidence_sources=[], steps=[])
+        
+        evidence_sources.append({'tool': 'devflow.job.read', 'query': {'jobId': job_id}, 'count': len(job_res)})
+        steps.append(f'从输入提取唯一任务ID：{job_id}')
+        steps.append(f'调用 devflow.job.read(jobId="{job_id}") → {len(job_res)} 条记录')
 
     except Exception as e:
-        return _blocked(f'工具调用异常：{str(e)}', evidence_sources=[], steps=[])
+        return _blocked(f'工具 devflow.job.read 调用异常：{str(e)}', evidence_sources=[], steps=[])
 
-    # Filter only READ + LOW tools using dict.get() and case-insensitive normalize (per contract: "normalize enum case when comparing")
+    try:
+        catalog_res = await ctx.tools.call('devflow.catalog.search', query='')
+        if not isinstance(catalog_res, list):
+            return _blocked('devflow.catalog.search 返回非列表类型', evidence_sources=evidence_sources, steps=steps)
+        if not catalog_res:
+            return _blocked('工具目录为空，无可用只读工具', evidence_sources=evidence_sources, steps=steps)
+        
+        evidence_sources.append({'tool': 'devflow.catalog.search', 'query': {'query': ''}, 'count': len(catalog_res)})
+        steps.append(f'调用 devflow.catalog.search(query="") → {len(catalog_res)} 条工具记录')
+
+    except Exception as e:
+        return _blocked(f'工具 devflow.catalog.search 调用异常：{str(e)}', evidence_sources=evidence_sources, steps=steps)
+
+    # Filter only READ + LOW tools using dict.get() and case-insensitive normalize (per contract)
     safe_tools = []
     for t in catalog_res:
         if isinstance(t, dict):
@@ -43,22 +61,12 @@ async def execute(data: dict, ctx) -> dict:
             risk = str(t.get('risk', '')).strip().upper()
             if access == 'READ' and risk == 'LOW':
                 safe_tools.append(t)
-
-    # Build evidence_sources and steps — required on *all* paths (PASS/BLOCKED)
-    evidence_sources = [
-        {'tool': 'devflow.job.read', 'query': {'jobId': job_id}, 'count': len(job_res)},
-        {'tool': 'devflow.catalog.search', 'query': {'query': ''}, 'count': len(catalog_res)}
-    ]
-    steps = [
-        f'从输入提取唯一任务ID：{job_id}',
-        f'调用 devflow.job.read(jobId="{job_id}") → {len(job_res)} 条记录',
-        f'调用 devflow.catalog.search(query="") → {len(catalog_res)} 条工具记录',
-        f'筛选出 {len(safe_tools)} 个 READ/LOW 工具'
-    ]
+    
+    steps.append(f'筛选出 {len(safe_tools)} 个 READ/LOW 工具')
 
     # Block if no safe tools
     if not safe_tools:
-        return _blocked('工具目录中无符合 READ/LOW 要求的可用工具', evidence_sources, steps)
+        return _blocked('工具目录中无符合 READ/LOW 要求的可用工具', evidence_sources=evidence_sources, steps=steps)
 
     # Prepare user message with real evidence
     evidence = {
@@ -81,21 +89,21 @@ async def execute(data: dict, ctx) -> dict:
         try:
             decision_obj = json.loads(llm_out.strip())
         except json.JSONDecodeError as e:
-            return _blocked(f'LLM返回非法JSON：{str(e)}', evidence_sources, steps)
+            return _blocked(f'LLM返回非法JSON：{str(e)}', evidence_sources=evidence_sources, steps=steps)
         
         # decision is mandatory
         decision = decision_obj.get('decision')
         if decision not in ('PASS', 'BLOCKED'):
-            return _blocked(f'LLM返回无效decision：{decision}', evidence_sources, steps)
+            return _blocked(f'LLM返回无效decision：{decision}', evidence_sources=evidence_sources, steps=steps)
         
         # If PASS, answer is optional but must be string if present
         if decision == 'PASS':
             answer = decision_obj.get('answer')
             if answer is not None and not isinstance(answer, str):
-                return _blocked(f'LLM返回的answer字段必须为字符串，实际类型：{type(answer).__name__}', evidence_sources, steps)
+                return _blocked(f'LLM返回的answer字段必须为字符串，实际类型：{type(answer).__name__}', evidence_sources=evidence_sources, steps=steps)
                 
     except Exception as e:
-        return _blocked(f'LLM调用或解析异常：{str(e)}', evidence_sources, steps)
+        return _blocked(f'LLM调用或解析异常：{str(e)}', evidence_sources=evidence_sources, steps=steps)
 
     if decision == 'BLOCKED':
         block_reason = decision_obj.get('block_reason')

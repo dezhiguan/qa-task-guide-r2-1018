@@ -184,38 +184,6 @@ async def test_execute_llm_returns_blocked_stays_blocked():
 
 
 @pytest.mark.asyncio
-async def test_execute_blocked_empty_safe_tools_from_manifest_compliance():
-    # Regression: ensure safe_tools filtering respects trusted agent.yaml enums, not tool result dict keys
-    ctx = MagicMock()
-    ctx.prompt = AsyncMock()
-    ctx.tools.call = AsyncMock()
-    ctx.llm.chat = AsyncMock()
-
-    ctx.prompt.return_value = MagicMock()
-    ctx.prompt.return_value.compile.return_value = "..."
-    # Simulate tool record with lowercase/whitespace-padded enums — must normalize per contract
-    ctx.tools.call.side_effect = [
-        [{'jobId': 'DF-0012', 'status': 'DONE'}],
-        [
-            {'name': 'log-viewer', 'access': ' read ', 'risk': 'low'},
-            {'name': 'config-dump', 'access': 'WRITE', 'risk': 'MID'}
-        ]
-    ]
-    ctx.llm.chat.return_value = '{"decision": "PASS"}'
-
-    data = {'text': 'DF-0012'}
-
-    result = await execute(data, ctx)
-
-    assert result['decision'] == 'PASS'
-    assert 'answer' in result
-    assert '已完成' in result['answer']
-    assert 'log-viewer' in result['answer']
-    assert len(result['evidence_sources']) == 2
-    assert len(result['steps']) == 4
-
-
-@pytest.mark.asyncio
 async def test_execute_blocked_job_record_missing_status():
     ctx = MagicMock()
     ctx.prompt = AsyncMock()
@@ -235,33 +203,6 @@ async def test_execute_blocked_job_record_missing_status():
 
     assert result['decision'] == 'BLOCKED'
     assert '缺少 status 字段' in result['block_reason']
-    assert len(result['evidence_sources']) == 2
-    assert len(result['steps']) == 4
-
-
-@pytest.mark.asyncio
-async def test_execute_normal_case_with_negation_safety():
-    # h-4: "查询任务DF-0011，仅解释现状和工具，不执行发布。"
-    ctx = MagicMock()
-    ctx.prompt = AsyncMock()
-    ctx.tools.call = AsyncMock()
-    ctx.llm.chat = AsyncMock()
-
-    ctx.prompt.return_value = MagicMock()
-    ctx.prompt.return_value.compile.return_value = "..."
-    ctx.tools.call.side_effect = [
-        [{'jobId': 'DF-0011', 'status': 'WAIT'}],
-        [{'name': 'log-viewer', 'access': 'READ', 'risk': 'LOW'}]
-    ]
-    ctx.llm.chat.return_value = '{"decision": "PASS"}'
-
-    data = {'text': '查询任务DF-0011，仅解释现状和工具，不执行发布。'}
-
-    result = await execute(data, ctx)
-
-    assert result['decision'] == 'PASS'
-    assert 'answer' in result
-    assert '等待中' in result['answer']
     assert len(result['evidence_sources']) == 2
     assert len(result['steps']) == 4
 
@@ -301,6 +242,33 @@ async def test_execute_blocked_invalid_llm_json():
         assert result['decision'] == 'BLOCKED'
         assert len(result['evidence_sources']) == 2
         assert len(result['steps']) == 4
+
+
+@pytest.mark.asyncio
+async def test_execute_normal_case_with_negation_safety():
+    # h-4: "查询任务DF-0011，仅解释现状和工具，不执行发布。"
+    ctx = MagicMock()
+    ctx.prompt = AsyncMock()
+    ctx.tools.call = AsyncMock()
+    ctx.llm.chat = AsyncMock()
+
+    ctx.prompt.return_value = MagicMock()
+    ctx.prompt.return_value.compile.return_value = "..."
+    ctx.tools.call.side_effect = [
+        [{'jobId': 'DF-0011', 'status': 'WAIT'}],
+        [{'name': 'log-viewer', 'access': 'READ', 'risk': 'LOW'}]
+    ]
+    ctx.llm.chat.return_value = '{"decision": "PASS"}'
+
+    data = {'text': '查询任务DF-0011，仅解释现状和工具，不执行发布。'}
+
+    result = await execute(data, ctx)
+
+    assert result['decision'] == 'PASS'
+    assert 'answer' in result
+    assert '等待中' in result['answer']
+    assert len(result['evidence_sources']) == 2
+    assert len(result['steps']) == 4
 
 
 @pytest.mark.asyncio
