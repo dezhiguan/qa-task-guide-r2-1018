@@ -9,8 +9,7 @@ async def execute(data: dict, ctx) -> dict:
         return _blocked('输入为空', evidence_sources=[], steps=[])
 
     # Extract exactly one DF-xxx task ID: support Chinese adjacent (e.g., "任务DF-0012。" or "DF-0012状态？")
-    # Use raw pattern r'DF-\d+' — \w includes Chinese in Python str.isalnum, but DF- is ASCII prefix; 
-    # we only need to match the standard DF-<digits> shape, and H1 says "Chinese紧邻编号" means chars can flank it, not replace it.
+    # H1: Chinese紧邻编号 → allow any Unicode word boundary; r'DF-\d+' is sufficient
     df_matches = re.findall(r'DF-\d+', text)
     if len(df_matches) != 1:
         return _blocked(f'必须且仅能指定一个DF编号，当前匹配到{len(df_matches)}个：{df_matches}', evidence_sources=[], steps=[])
@@ -25,20 +24,20 @@ async def execute(data: dict, ctx) -> dict:
     try:
         job_res = await ctx.tools.call('devflow.job.read', jobId=job_id)
         if not isinstance(job_res, list):
-            return _blocked('devflow.job.read 返回非列表类型', evidence_sources=[], steps=[])
+            return _blocked('devflow.job.read 返回非列表类型', evidence_sources=evidence_sources, steps=steps)
         if not job_res:
-            return _blocked(f'未查到任务 {job_id} 的任何记录', evidence_sources=[], steps=[])
+            return _blocked(f'未查到任务 {job_id} 的任何记录', evidence_sources=evidence_sources, steps=steps)
         # Validate job record structure: must be dict with 'status'
         first_job = job_res[0]
         if not isinstance(first_job, dict) or 'status' not in first_job:
-            return _blocked(f'任务 {job_id} 记录格式无效：缺少 status 字段', evidence_sources=[], steps=[])
+            return _blocked(f'任务 {job_id} 记录格式无效：缺少 status 字段', evidence_sources=evidence_sources, steps=steps)
         
         evidence_sources.append({'tool': 'devflow.job.read', 'query': {'jobId': job_id}, 'count': len(job_res)})
         steps.append(f'从输入提取唯一任务ID：{job_id}')
         steps.append(f'调用 devflow.job.read(jobId="{job_id}") → {len(job_res)} 条记录')
 
     except Exception as e:
-        return _blocked(f'工具 devflow.job.read 调用异常：{str(e)}', evidence_sources=[], steps=[])
+        return _blocked(f'工具 devflow.job.read 调用异常：{str(e)}', evidence_sources=evidence_sources, steps=steps)
 
     try:
         catalog_res = await ctx.tools.call('devflow.catalog.search', query='')

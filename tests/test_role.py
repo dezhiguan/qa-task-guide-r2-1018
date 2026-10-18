@@ -146,7 +146,7 @@ async def test_execute_blocked_empty_catalog():
 
     ctx.prompt.return_value = MagicMock()
     ctx.prompt.return_value.compile.return_value = "..."
-    ctx.tools.call.side_effect = [[{'status': 'DONE'}], []]
+    ctx.tools.call.side_effect = [[{'jobId': 'DF-0001', 'status': 'DONE'}], []]
 
     data = {'text': 'DF-0001'}
 
@@ -154,33 +154,8 @@ async def test_execute_blocked_empty_catalog():
 
     assert result['decision'] == 'BLOCKED'
     assert '工具目录为空' in result['block_reason']
-    assert len(result['evidence_sources']) == 0
-    assert len(result['steps']) == 0
-
-
-@pytest.mark.asyncio
-async def test_execute_llm_returns_blocked_stays_blocked():
-    ctx = MagicMock()
-    ctx.prompt = AsyncMock()
-    ctx.tools.call = AsyncMock()
-    ctx.llm.chat = AsyncMock()
-
-    ctx.prompt.return_value = MagicMock()
-    ctx.prompt.return_value.compile.return_value = "..."
-    ctx.tools.call.side_effect = [
-        [{'jobId': 'DF-0012', 'status': 'FAIL'}],
-        [{'name': 'log-viewer', 'access': 'READ', 'risk': 'LOW'}]
-    ]
-    ctx.llm.chat.return_value = '{"decision": "BLOCKED", "block_reason": "PASS is not allowed here"}'
-
-    data = {'text': 'DF-0012'}
-
-    result = await execute(data, ctx)
-
-    assert result['decision'] == 'BLOCKED'
-    assert result['block_reason'] == 'PASS is not allowed here'
-    assert len(result['evidence_sources']) == 2
-    assert len(result['steps']) == 4
+    assert len(result['evidence_sources']) == 1
+    assert len(result['steps']) == 2
 
 
 @pytest.mark.asyncio
@@ -203,8 +178,8 @@ async def test_execute_blocked_job_record_missing_status():
 
     assert result['decision'] == 'BLOCKED'
     assert '缺少 status 字段' in result['block_reason']
-    assert len(result['evidence_sources']) == 2
-    assert len(result['steps']) == 4
+    assert len(result['evidence_sources']) == 1
+    assert len(result['steps']) == 2
 
 
 @pytest.mark.asyncio
@@ -242,6 +217,31 @@ async def test_execute_blocked_invalid_llm_json():
         assert result['decision'] == 'BLOCKED'
         assert len(result['evidence_sources']) == 2
         assert len(result['steps']) == 4
+
+
+@pytest.mark.asyncio
+async def test_execute_llm_returns_blocked_stays_blocked():
+    ctx = MagicMock()
+    ctx.prompt = AsyncMock()
+    ctx.tools.call = AsyncMock()
+    ctx.llm.chat = AsyncMock()
+
+    ctx.prompt.return_value = MagicMock()
+    ctx.prompt.return_value.compile.return_value = "..."
+    ctx.tools.call.side_effect = [
+        [{'jobId': 'DF-0012', 'status': 'FAIL'}],
+        [{'name': 'log-viewer', 'access': 'READ', 'risk': 'LOW'}]
+    ]
+    ctx.llm.chat.return_value = '{"decision": "BLOCKED", "block_reason": "PASS is not allowed here"}'
+
+    data = {'text': 'DF-0012'}
+
+    result = await execute(data, ctx)
+
+    assert result['decision'] == 'BLOCKED'
+    assert result['block_reason'] == 'PASS is not allowed here'
+    assert len(result['evidence_sources']) == 2
+    assert len(result['steps']) == 4
 
 
 @pytest.mark.asyncio
